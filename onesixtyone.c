@@ -59,6 +59,7 @@ char* snmp_errors[] = {
 };
 
 struct {
+	int port;
 	int debug;
 	int log;
 	int quiet;
@@ -84,6 +85,7 @@ void usage()
 	printf("  -c <communityfile> file with community names to try\n");
 	printf("  -i <inputfile>     file with target hosts\n");
 	printf("  -o <outputfile>    output log\n");
+	printf("  -p <port>          snmp port to query (default is 161)\n");
 	printf("  -d                 debug mode, use twice for more information\n\n");
 	printf("  -w n               wait n milliseconds (1/1000 of a second) between sending packets (default 10)\n");
 	printf("  -q                 quiet mode, do not print log to stdout, use with -l\n");
@@ -98,7 +100,7 @@ void read_communities(char* filename)
 	char ch;
 
 	if (o.debug > 0) printf("Using community file %s\n", filename);
-		
+
 	if ((fd = fopen(filename, "r")) == 0) {
 		printf("Error opening community file %s\n", filename);
 		exit(1);
@@ -111,7 +113,7 @@ void read_communities(char* filename)
 			community[i][c] = '\0';
 			if (c > 0) {
 				i++; c = 0;
-				community[i] = (char*)malloc(16);
+				community[i] = (char*)malloc(MAX_COMMUNITY_SIZE);
 			}
 		} else {
 			community[i][c++] = ch;
@@ -121,7 +123,7 @@ void read_communities(char* filename)
 			exit(1);
 		}
 	}
-			
+
 	community_count = i;
 	fclose(fd);
 }
@@ -181,7 +183,8 @@ void init_options(int argc, char *argv[])
 	int community_file;
 
 	int arg, i;
-	
+
+	o.port = 161;
 	o.debug = 0;
 	o.log = 0;
 	o.quiet = 0;
@@ -191,10 +194,12 @@ void init_options(int argc, char *argv[])
 
 	o.log_fd = NULL;
 
-	while ((arg = getopt(argc, argv, "c:di:o:w:q")) != EOF) {
+	while ((arg = getopt(argc, argv, "c:p:di:o:w:q")) != EOF) {
 		switch (arg) {
 			case 'c' :	community_file = 1;
 						strncpy(community_filename, optarg, sizeof(community_filename));
+						break;
+			case 'p' :  o.port = atoi(optarg);
 						break;
 			case 'd' :	o.debug++;
 						break;
@@ -219,7 +224,7 @@ void init_options(int argc, char *argv[])
 	}
 
 	if (!input_file) {
-		if (optind >= argc) { 
+		if (optind >= argc) {
 			usage();
 			exit(1);
 		}
@@ -253,7 +258,7 @@ void init_options(int argc, char *argv[])
 		usage();
 		exit(1);
 	}
-	
+
 	if (o.log) {
 		if ((o.log_fd = fopen(log_filename, "w")) == 0) {
 			printf("Error opening log file %s\n", log_filename);
@@ -263,14 +268,14 @@ void init_options(int argc, char *argv[])
 	} else if (o.quiet) {
 		printf("Warning: quiet mode specified without logging, you will lose your scan results\n");
 	}
-		
+
 	if (o.debug > 0) {
 		printf("%d communities:", community_count);
 		for (i=0; i < community_count; i++)
 			printf(" %s", community[i]);
 		printf("\n");
 	}
-	
+
 	if (o.debug > 0) printf("Waiting for %ld milliseconds between packets\n", o.wait);
 }
 
@@ -291,36 +296,36 @@ int build_snmp_req(char* buf, int buf_size, char* community)
 
 	buf[0] = 0x30;
 	buf[1] = 19 + strlen(community) + sizeof(object)-1;
-	
+
 	// Version: 1
 	buf[2] = 0x02;
 	buf[3] = 0x01;
 	buf[4] = 0x00;
-	
+
 	// Community
 	buf[5] = 0x04;
 	buf[6] = strlen(community);
 
 	strcpy((buf + 7), community);
 	i = 7 + strlen(community);
-	
+
 	// PDU type: GET
 	buf[i++] = 0xa0;
 	buf[i++] = 12 + sizeof(object)-1;
-	
+
 	// Request ID
-	buf[i++] = 0x02; 
+	buf[i++] = 0x02;
 	buf[i++] = 0x04;
 	buf[i++] = (char)((id >> 24) & 0xff);
 	buf[i++] = (char)((id >> 16) & 0xff);
 	buf[i++] = (char)((id >> 8) & 0xff);
 	buf[i++] = (char)((id >> 0) & 0xff);
-	
+
 	// Error status: no error
 	buf[i++] = 0x02;
 	buf[i++] = 0x01;
 	buf[i++] = 0x00;
-	
+
 	// Error index
 	buf[i++] = 0x02;
 	buf[i++] = 0x01;
@@ -333,7 +338,7 @@ int build_snmp_req(char* buf, int buf_size, char* community)
 	return (i);
 }
 
-void logf(char* fmt, ...)
+void my_logf(char* fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
@@ -346,17 +351,17 @@ int parse_asn_length(u_char* buf, int buf_size, int* i)
 {
 	int len;
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
-	
+
 	if (buf[*i] < 0x81) {
 		len = buf[*i];
 		*i += 1;
 	} else if (buf[*i] == 0x81) {
 		*i += 1;
 		if ((*i)+1 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		len = buf[*i];
@@ -365,7 +370,7 @@ int parse_asn_length(u_char* buf, int buf_size, int* i)
 	else if (buf[*i] == 0x82) {
 		*i += 1;
 		if ((*i)+2 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		len = (buf[*i] << 8) + buf[(*i)+1];
@@ -374,7 +379,7 @@ int parse_asn_length(u_char* buf, int buf_size, int* i)
 	else if (buf[*i] == 0x83) {
 		*i += 1;
 		if ((*i)+3 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		len = (buf[*i] << 16) + (buf[(*i)+1] << 8) + buf[(*i)+2];
@@ -383,19 +388,19 @@ int parse_asn_length(u_char* buf, int buf_size, int* i)
 	else if (buf[*i] == 0x84) {
 		*i += 1;
 		if ((*i)+4 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		len = (buf[*i] << 24) + (buf[(*i)+1] << 16) + (buf[(*i)+2] << 8) + buf[(*i)+3];
 		*i += 4;
 	}
 	else {
-		logf("Unable to decode SNMP packet: wrong length\n");
+		my_logf("Unable to decode SNMP packet: wrong length\n");
 		return -1;
 	}
 
 	if ((*i)+len > buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
@@ -405,7 +410,7 @@ int parse_asn_length(u_char* buf, int buf_size, int* i)
 int skip_asn_length(u_char* buf, int buf_size, int* i)
 {
 	int ret;
-	
+
 	if ((ret = parse_asn_length(buf, buf_size, i)) > 0)
 		*i += ret;
 
@@ -417,28 +422,28 @@ int parse_asn_integer(u_char* buf, int buf_size, int* i)
 	int ret;
 
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[*i] == 0x81) {
 		*i += 1;
 		if (*i >= buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 	}
 
 	if (buf[*i] == 0x01) {
 		if ((*i)+2 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		ret = (int)buf[(*i)+1];
 		*i += 2;
 	} else if (buf[*i] == 0x02) {
 		if ((*i)+3 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		ret = 	((int)buf[(*i)+1] << 8) +
@@ -446,7 +451,7 @@ int parse_asn_integer(u_char* buf, int buf_size, int* i)
 		*i += 3;
 	} else if (buf[*i] == 0x04) {
 		if ((*i)+5 > buf_size) {
-			logf("Unable to decode SNMP packet: buffer overflow\n");
+			my_logf("Unable to decode SNMP packet: buffer overflow\n");
 			return -1;
 		}
 		ret = 	((int)buf[(*i)+1] << 24) +
@@ -456,7 +461,7 @@ int parse_asn_integer(u_char* buf, int buf_size, int* i)
 		*i += 5;
 	}
 	else {
-		logf("Unable to decode SNMP packet: unrecognized integer length\n");
+		my_logf("Unable to decode SNMP packet: unrecognized integer length\n");
 		return -1;
 	}
 
@@ -475,9 +480,9 @@ int print_asn_string(u_char* buf, int buf_size, int* i)
 
 	for (;*i < string_end; *i += 1) {
 		if (buf[*i] < 0x20 || buf[*i] > 0x80)
-			logf(" ");
+			my_logf(" ");
 		else
-			logf("%c", buf[*i]);
+			my_logf("%c", buf[*i]);
 	}
 
 	return 0;
@@ -486,12 +491,12 @@ int print_asn_string(u_char* buf, int buf_size, int* i)
 int parse_snmp_header(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x30) {
-		logf("Unable to decode SNMP packet: wrong header\n");
+		my_logf("Unable to decode SNMP packet: wrong header\n");
 		return -1;
 	}
 
@@ -506,19 +511,19 @@ int parse_snmp_version(u_char* buf, int buf_size, int* i)
 	int ret;
 
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x02) {
-		logf("Unable to decode SNMP packet: snmp version invalid\n");
+		my_logf("Unable to decode SNMP packet: snmp version invalid\n");
 		return -1;
 	}
 
 	if ((ret = parse_asn_integer(buf, buf_size, i)) == -1)
 		return -1;
 	else if (ret != 0) {
-		logf("Unable to decode SNMP packet: snmp version invalid\n");
+		my_logf("Unable to decode SNMP packet: snmp version invalid\n");
 		return -1;
 	}
 
@@ -528,19 +533,19 @@ int parse_snmp_version(u_char* buf, int buf_size, int* i)
 int parse_snmp_community(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x04) {
-		logf("Unable to decode SNMP packet: community name not found\n");
+		my_logf("Unable to decode SNMP packet: community name not found\n");
 		return -1;
 	}
 
-	logf("[");
+	my_logf("[");
 	if (print_asn_string(buf, buf_size, i) == -1)
 		return -1;
-	logf("] ");
+	my_logf("] ");
 
 	return 0;
 }
@@ -548,15 +553,15 @@ int parse_snmp_community(u_char* buf, int buf_size, int* i)
 int parse_snmp_pdu(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0xa2) {
-		logf("Unable to decode SNMP packet: PDU type not RESPONSE (0xa2)\n");
+		my_logf("Unable to decode SNMP packet: PDU type not RESPONSE (0xa2)\n");
 		return -1;
 	}
-	
+
 	if (parse_asn_length(buf, buf_size, i) < 0)
 		return -1;
 
@@ -566,12 +571,12 @@ int parse_snmp_pdu(u_char* buf, int buf_size, int* i)
 int parse_snmp_requestid(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x02) {
-		logf("Unable to decode SNMP packet: request id invalid\n");
+		my_logf("Unable to decode SNMP packet: request id invalid\n");
 		return -1;
 	}
 	if (parse_asn_integer(buf, buf_size, i) < 0)
@@ -585,22 +590,22 @@ int parse_snmp_errorcode(u_char* buf, int buf_size, int* i)
 	int ret;
 
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x02) {
-		logf("Unable to decode SNMP packet: error code invalid\n");
+		my_logf("Unable to decode SNMP packet: error code invalid\n");
 		return -1;
 	}
 	if ((ret = parse_asn_integer(buf, buf_size, i)) < 0)
 		return -1;
 	if (ret != 0) {
 		if (ret < 0 || ret > 18) {
-			logf("Unable to decode SNMP packet: error code invalid\n");
+			my_logf("Unable to decode SNMP packet: error code invalid\n");
 			return -1;
-		}			
-		logf("Host responded with error %s\n", snmp_errors[ret]);
+		}
+		my_logf("Host responded with error %s\n", snmp_errors[ret]);
 		return -1;
 	}
 
@@ -610,12 +615,12 @@ int parse_snmp_errorcode(u_char* buf, int buf_size, int* i)
 int parse_snmp_errorindex(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x02) {
-		logf("Unable to decode SNMP packet: error index invalid\n");
+		my_logf("Unable to decode SNMP packet: error index invalid\n");
 		return -1;
 	}
 	if (parse_asn_integer(buf, buf_size, i) < 0)
@@ -627,12 +632,12 @@ int parse_snmp_errorindex(u_char* buf, int buf_size, int* i)
 int parse_snmp_objheader(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x30) {
-		logf("Unable to decode SNMP packet: invalid object header\n");
+		my_logf("Unable to decode SNMP packet: invalid object header\n");
 		return -1;
 	}
 	if (parse_asn_length(buf, buf_size, i) < 0)
@@ -644,12 +649,12 @@ int parse_snmp_objheader(u_char* buf, int buf_size, int* i)
 int parse_snmp_objheader6(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x06) {
-		logf("Unable to decode SNMP packet: invalid object header\n");
+		my_logf("Unable to decode SNMP packet: invalid object header\n");
 		return -1;
 	}
 	if (skip_asn_length(buf, buf_size, i) < 0)
@@ -661,12 +666,12 @@ int parse_snmp_objheader6(u_char* buf, int buf_size, int* i)
 int parse_snmp_value(u_char* buf, int buf_size, int* i)
 {
 	if (*i >= buf_size) {
-		logf("Unable to decode SNMP packet: buffer overflow\n");
+		my_logf("Unable to decode SNMP packet: buffer overflow\n");
 		return -1;
 	}
 
 	if (buf[(*i)++] != 0x04) {
-		logf("Unable to decode SNMP packet: invalid value\n");
+		my_logf("Unable to decode SNMP packet: invalid value\n");
 		return -1;
 	}
 	if (print_asn_string(buf, buf_size, i) < 0)
@@ -688,16 +693,16 @@ void parse_snmp_response(u_char* buf, int buf_size)
 	if (parse_snmp_requestid(buf, buf_size, &i) == -1) return;
 	if (parse_snmp_errorcode(buf, buf_size, &i) == -1) return;
 	if (parse_snmp_errorindex(buf, buf_size, &i) == -1) return;
-		
+
 	if (i+3 <= buf_size && buf[i] == 0x00 && buf[i+1] == 0x30 && buf[i+2] == 0x20)	// Bug in an HP JetDirect
 		i += 3;
-	
+
 	if (parse_snmp_objheader(buf, buf_size, &i) == -1) return;
 	if (parse_snmp_objheader(buf, buf_size, &i) == -1) return;		// yes, this should be called twice
 	if (parse_snmp_objheader6(buf, buf_size, &i) == -1) return;
 	if (parse_snmp_value(buf, buf_size, &i) == -1) return;
 
-    logf("\n");
+    my_logf("\n");
 }
 
 /* Subtract the `struct timeval' values X and Y,
@@ -724,7 +729,7 @@ inline int timeval_subtract (struct timeval *result, struct timeval *x, struct t
 	/* Compute the time remaining to wait. tv_usec is certainly positive. */
 	result->tv_sec = x->tv_sec - y->tv_sec;
 	result->tv_usec = x->tv_usec - y->tv_usec;
-	
+
 	/* Return 1 if result is negative. */
 	return x->tv_sec < y->tv_sec;
 }
@@ -747,24 +752,24 @@ void receive_snmp(int sock, long wait, struct sockaddr_in* remote_addr)
 
 	tv_wait.tv_sec = wait / 1000;
 	tv_wait.tv_usec = wait % 1000 * 1000;
-	
+
 	do {
 		/* Put the socket into the fd set */
 		FD_ZERO(&fds);
 		FD_SET(sock, &fds);
-	
+
 		if ((ret = select(sock+1, &fds, NULL, NULL, &tv_wait)) == -1) {
 			printf("Error in pselect\n");
 			exit(1);
 		} else if (ret > 0) {
 			memset(&buf, 0x0, sizeof(buf));
 			remote_addr_len = sizeof(*remote_addr);
-	
+
 			ret = recvfrom(sock, &buf, sizeof(buf), 0, (struct sockaddr*)remote_addr, &remote_addr_len);
 				if (ret < 0) {
 				printf("Error in recvfrom\n");
 			}
-			logf("%s ", inet_ntoa(remote_addr->sin_addr));
+			my_logf("%s ", inet_ntoa(remote_addr->sin_addr));
 			parse_snmp_response((u_char*)&buf, ret);
 			if (o.log) fflush(o.log_fd);
 		}
@@ -795,19 +800,19 @@ int main(int argc, char* argv[])
 	local_addr.sin_family = AF_INET;
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(0);
-	
+
 	ret = bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr));
 	if (ret < 0) {
 		printf("Error binding socket\n");
 		exit(1);
 	}
-	
+
 	/* remote address */
 	remote_addr.sin_family = AF_INET;
-	remote_addr.sin_port = htons(161);
+	remote_addr.sin_port = htons(o.port);
 
-	printf("Scanning %d hosts, %d communities\n", host_count, community_count);
-	
+	printf("Scanning %d hosts, %d communities, port=%i\n", host_count, community_count, o.port);
+
 	for (c=0; c < community_count; c++) {
 		if (o.debug > 0) printf("Trying community %s\n", community[c]);
 
@@ -826,7 +831,7 @@ int main(int argc, char* argv[])
 			receive_snmp(sock, o.wait, &remote_addr);
 		}
 	}
-	
+
 	if (o.debug > 0) printf("All packets sent, waiting for responses.\n");
 
 	/* wait for 5 seconds */
