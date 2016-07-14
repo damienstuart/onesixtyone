@@ -34,7 +34,7 @@
 
 #define MAX_COMMUNITIES 1024
 #define MAX_HOSTS 65535
-#define MAX_COMMUNITY_SIZE 16
+#define MAX_COMMUNITY_SIZE 24
 
 char* snmp_errors[] = {
 	"NO ERROR",				/* 0 */
@@ -340,10 +340,14 @@ int build_snmp_req(char* buf, int buf_size, char* community)
 
 void my_logf(char* fmt, ...)
 {
-	va_list args;
+	va_list args, argcpy;
 	va_start(args, fmt);
+	if (!o.quiet) {
+        	va_copy(argcpy, args);
+		vprintf(fmt, argcpy);
+		va_end(argcpy);
+        }
 	if (o.log) vfprintf(o.log_fd, fmt, args);
-	if (!o.quiet) vprintf(fmt, args);
 	va_end(args);
 }
 
